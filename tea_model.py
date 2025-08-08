@@ -1,108 +1,90 @@
 # --- FILE 1: tea_model.py (The Backend Calculation Engine) ---
+# This version is focused on Unit 1, using a fixed, complex ore composition.
 
 import numpy as np
 
 class HydroPlantTEA:
     """
-    A class to perform a Technoeconomic Analysis (TEA) for a 
-    hydrometallurgical nickel recovery plant.
-    It takes a dictionary of parameters and calculates all mass flows,
-    energy consumption, CAPEX, OPEX, and key financial metrics.
+    TEA model for a hydrometallurgical plant, starting with a fixed ore composition
+    based on Serpentinised Peridotite.
     """
     def __init__(self, params):
         self.p = params
         self.r = {} # Results dictionary
+        self._load_ore_composition()
+
+    def _load_ore_composition(self):
+        """
+        Loads the fixed wt% composition of Serpentinised Peridotite.
+        The data is normalized to sum to 100%.
+        """
+        # Data extracted from the user-provided image
+        composition_data = {
+            'SiO2': 41.65, 'TiO2': 0.034, 'Al2O3': 1.58, 'FeO': 7.83,
+            'MnO': 0.125, 'MgO': 42.84, 'CaO': 0.58, 'Na2O': 0.0,
+            'K2O': 0.0, 'P2O5': 0.016, 'LOI': 4.43
+        }
+        
+        # Trace elements in ppm, converted to wt%
+        trace_elements_ppm = {
+            'Ni': 2547, 'Cr': 3154, 'V': 37, 'Sc': 10,
+            'Cu': 18, 'Sr': 1, 'Y': 3, 'Zr': 6.2
+        }
+        for element, ppm in trace_elements_ppm.items():
+            composition_data[element] = ppm / 10000.0 # Convert ppm to wt%
+
+        # Normalize the composition to ensure it sums to 100%
+        total_wt = sum(composition_data.values())
+        self.ore_composition = {key: (value / total_wt) * 100 for key, value in composition_data.items()}
+        self.r['ore_composition'] = self.ore_composition
 
     def run_full_analysis(self):
-        """Executes the calculation for each unit in sequence."""
+        """Executes the calculation for the defined units."""
         self._calculate_unit_1_crushing()
-        self._calculate_unit_2_mixing()
-        self._calculate_unit_3_eleach()
-        self._calculate_unit_4_centrifuge()
-        self._calculate_unit_5_adsorption()
-        self._calculate_unit_6_precipitation()
-        self._calculate_final_economics()
+        # Placeholder for future units
+        # self._calculate_unit_2_mixing()
+        # ...etc...
 
     def _calculate_unit_1_crushing(self):
-        self.r['U1'] = {'capex': self.p['capex_crusher'], 'power_kw': self.p['power_crusher_kw']}
-
-    def _calculate_unit_2_mixing(self):
-        # This unit is now fully controlled by frontend parameters
-        self.r['U2'] = {'capex': self.p['capex_mixing'], 'power_kw': self.p['power_mixing_kw']}
-
-    def _calculate_unit_3_eleach(self):
-        self.r['ni_in_feed_kghr'] = self.p['ore_flow_rate_kghr'] * (self.p['ore_ni_ppm'] / 1e6)
-        ca_in_kghr = (self.p['ore_flow_rate_kghr'] * self.p['ore_cao_pct']/100) * (40.08/56.08)
-        mg_in_kghr = (self.p['ore_flow_rate_kghr'] * self.p['ore_mgo_pct']/100) * (24.31/40.30)
+        """
+        Calculates energy, power, and cost for the crushing/grinding circuit
+        based on Bond's Law and engineering cost correlations.
+        """
+        # --- Energy & Power Calculation (Bond's Law) ---
+        Wi = self.p['bond_work_index']
+        P80 = self.p['p80_product_um']
+        F80 = self.p['f80_feed_um']
         
-        ni_leached_kghr = self.r['ni_in_feed_kghr'] * (self.p['leach_eff_ni_pct'] / 100)
-        ca_leached_kghr = ca_in_kghr * (self.p['leach_eff_ca_pct'] / 100)
-        mg_leached_kghr = mg_in_kghr * (self.p['leach_eff_mg_pct'] / 100)
-
-        e_moles_ni = (ni_leached_kghr*1000 / 58.69) * 2
-        e_moles_ca = (ca_leached_kghr*1000 / 40.08) * 2
-        e_moles_mg = (mg_leached_kghr*1000 / 24.31) * 2
-        total_e_moles_leaching = e_moles_ni + e_moles_ca + e_moles_mg
-        total_e_moles = total_e_moles_leaching / (self.p['current_eff_leach_pct'] / 100)
-        total_current_amps = total_e_moles * 96485 / 3600
+        # Ensure P80 is not zero to avoid division errors
+        if P80 <= 0: P80 = 1
         
-        dc_power_kw = (total_current_amps * self.p['cell_voltage_v']) / 1000
-        power_kw = dc_power_kw / 0.95
+        # Specific Energy Consumption in kWh / metric ton
+        specific_energy_kwh_t = Wi * (10 / np.sqrt(P80) - 10 / np.sqrt(F80))
         
-        electrode_area_m2 = total_current_amps / self.p['current_density_am2']
-        capex_usd = (electrode_area_m2 * self.p['capex_cell_per_m2']) * self.p['inst_factor_cell']
+        # Throughput in metric tons / hour
+        throughput_tph = self.p['ore_flow_rate_kghr'] / 1000
         
-        self.r['U3'] = {'capex': capex_usd, 'power_kw': power_kw}
-        self.r['ni_leached_kghr'] = ni_leached_kghr
-
-    def _calculate_unit_4_centrifuge(self):
-        self.r['U4'] = {'capex': self.p['capex_centrifuge_base'], 'power_kw': 1.4}
-        solids_in_kghr = self.p['ore_flow_rate_kghr'] * (1 - (self.p['leach_eff_ni_pct'] + self.p['leach_eff_ca_pct'] + self.p['leach_eff_mg_pct'])/300)
-        brine_kghr = self.p['ore_flow_rate_kghr'] * (100 / self.p['slurry_solids_pct'] - 1)
-        liquid_in_cake_kghr = (solids_in_kghr / (1-self.p['cake_moisture_pct']/100)) * (self.p['cake_moisture_pct']/100)
-        fraction_liquid_lost = liquid_in_cake_kghr / brine_kghr if brine_kghr > 0 else 0
+        # Theoretical power
+        theoretical_power_kw = specific_energy_kwh_t * throughput_tph
         
-        self.r['ni_lost_to_cake_kghr'] = self.r['ni_leached_kghr'] * fraction_liquid_lost
-        self.r['ni_to_adsorption_kghr'] = self.r['ni_leached_kghr'] - self.r['ni_lost_to_cake_kghr']
-
-    def _calculate_unit_5_adsorption(self):
-        adsorbent_vol_L = (self.r['ni_to_adsorption_kghr']*1000 / self.p['adsorbent_capacity_gL']) if self.p['adsorbent_capacity_gL'] > 0 else 0
-        capex = self.p['capex_adsorption_base_per_L'] * adsorbent_vol_L + self.p['capex_adsorption_fixed']
-        self.r['U5'] = {'capex': capex, 'power_kw': 0.25}
-        self.r['ni_lost_to_barren_kghr'] = self.r['ni_to_adsorption_kghr'] * (1 - self.p['adsorption_eff_pct']/100)
-        self.r['ni_to_precip_kghr'] = self.r['ni_to_adsorption_kghr'] - self.r['ni_lost_to_barren_kghr']
-
-    def _calculate_unit_6_precipitation(self):
-        self.r['U6'] = {'capex': self.p['capex_precip'], 'power_kw': self.p['power_precip_kw']}
-        self.r['ni_lost_to_precip_kghr'] = self.r['ni_to_precip_kghr'] * (1 - self.p['precip_eff_pct']/100)
-        self.r['ni_final_product_kghr'] = self.r['ni_to_precip_kghr'] - self.r['ni_lost_to_precip_kghr']
-
-    def _calculate_final_economics(self):
-        units = ['U1', 'U2', 'U3', 'U4', 'U5', 'U6']
-        total_capex = sum(self.r[u]['capex'] for u in units)
-        total_power_kw = sum(self.r[u]['power_kw'] for u in units)
-        self.r['total_capex'] = total_capex
-        self.r['total_power_kw'] = total_power_kw
-
-        cost_electricity_yr = total_power_kw * (self.p['electricity_cost_mwh']/1000) * self.p['op_hours_yr']
-        cost_reagents_yr = self.p['reagent_cost_per_ton_ore'] * (self.p['ore_flow_rate_kghr']/1000) * self.p['op_hours_yr']
-        cost_maintenance_yr = self.r['total_capex'] * self.p['maintenance_pct_capex']
-        total_opex_yr = cost_electricity_yr + self.p['labor_cost_yr'] + cost_reagents_yr + cost_maintenance_yr
-        self.r['total_opex_yr'] = total_opex_yr
+        # Electrical power, assuming 90% motor efficiency
+        electrical_power_kw = theoretical_power_kw / 0.90
         
-        annual_ni_prod_kg = self.r['ni_final_product_kghr'] * self.p['op_hours_yr']
-        self.r['annual_ni_prod_kg'] = annual_ni_prod_kg
+        # --- CAPEX Calculation (Power Law Scaling) ---
+        # Base case: 1.6 kW motor for a unit costing $130,000
+        base_power = 1.6  # kW
+        base_capex = 130000  # USD
+        scaling_factor = 0.6 # Standard for this type of equipment
         
-        if annual_ni_prod_kg > 0:
-            crf = (self.p['discount_rate'] * (1 + self.p['discount_rate'])**self.p['plant_life_yr']) / \
-                  ((1 + self.p['discount_rate'])**self.p['plant_life_yr'] - 1)
-            annualized_capex = self.r['total_capex'] * crf
-            self.r['lcom_usd_kg'] = (annualized_capex + total_opex_yr) / annual_ni_prod_kg
+        # Use the scaling law, but prevent zero power from causing errors
+        if electrical_power_kw > 0:
+            installed_capex_usd = base_capex * (electrical_power_kw / base_power) ** scaling_factor
         else:
-            self.r['lcom_usd_kg'] = np.inf
-            
-        annual_revenue = annual_ni_prod_kg * self.p['ni_price_kg']
-        self.r['annual_profit'] = annual_revenue - total_opex_yr
+            installed_capex_usd = 0
 
-        self.r['capex_breakdown'] = {u: self.r[u]['capex'] for u in units}
-        self.r['opex_breakdown'] = {'Electricity': cost_electricity_yr, 'Labor': self.p['labor_cost_yr'], 'Reagents': cost_reagents_yr, 'Maintenance': cost_maintenance_yr}
+        # Store all results for this unit
+        self.r['U1'] = {
+            'specific_energy_kwh_t': specific_energy_kwh_t,
+            'electrical_power_kw': electrical_power_kw,
+            'installed_capex_usd': installed_capex_usd
+        }
